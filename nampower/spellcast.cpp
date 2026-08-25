@@ -294,25 +294,33 @@ namespace Nampower {
 
     void CastQueuedNormalSpell() {
         if (gCastData.normalSpellQueued) {
-            if (gLastNormalCastParams.spellId > 0) {
-                DEBUG_LOG("Triggering queued cast of " << game::GetSpellName(gLastNormalCastParams.spellId));
+            auto const normalCastParams = gLastNormalCastParams;
+
+            // Consume this queue generation before entering game/Lua code. A
+            // local failure may synchronously schedule its replacement.
+            gCastData.normalSpellQueued = false;
+
+            if (normalCastParams.spellId > 0) {
+                DEBUG_LOG("Triggering queued cast of " << game::GetSpellName(normalCastParams.spellId));
                 gCastData.castingQueuedSpell = true;
                 gCastData.targetingSpellQueued = false; // make sure this is off so SendCast is allowed
                 gCastData.targetingSpellId = 0;
-                gCastData.numRetries = gLastNormalCastParams.numRetries;
-                Spell_C_CastSpellHook(castSpellDetour, gLastNormalCastParams.casterUnit, gLastNormalCastParams.spellId,
-                                               gLastNormalCastParams.item, gLastNormalCastParams.guid);
+                gCastData.numRetries = normalCastParams.numRetries;
+                Spell_C_CastSpellHook(castSpellDetour, normalCastParams.casterUnit, normalCastParams.spellId,
+                                      normalCastParams.item, normalCastParams.guid);
                 gLastCastData.wasQueued = true;
             } else {
                 DEBUG_LOG("Ignoring queued cast, no spell id");
                 gLastCastData.wasQueued = false;
             }
-            TriggerSpellQueuedEvent(NORMAL_QUEUE_POPPED, gLastNormalCastParams.spellId);
-            gCastData.normalSpellQueued = false;
             gCastData.castingQueuedSpell = false;
-                gCastData.targetingSpellQueued = false;
-                gCastData.targetingSpellId = 0;
-                gCastData.numRetries = 0;
+            gCastData.targetingSpellQueued = false;
+            gCastData.targetingSpellId = 0;
+            gCastData.numRetries = 0;
+
+            // This pop belongs to the consumed generation. Do not clear a
+            // replacement queued by the cast/failure callbacks above.
+            TriggerSpellQueuedEvent(NORMAL_QUEUE_POPPED, normalCastParams.spellId);
         }
     }
 

@@ -158,6 +158,15 @@ and a configured Nampower retry may then synchronously emit
 `SPELL_FAILED_SELF` inside the cast call before the corresponding
 `SPELL_CAST_EVENT`. Consumers must tolerate both orders and use the attempt ID
 rather than assuming arrival order proves identity.
+
+When a locally rejected queued normal cast is retried, the replacement is
+scheduled synchronously. Consumers can therefore observe `SPELL_FAILED_SELF`,
+queue code 2, a failed `SPELL_CAST_EVENT`, and then queue code 3. That code 3
+pops the older queue generation whose cast was just attempted; it does not
+cancel the replacement announced by code 2. The queue event ABI remains the two
+arguments documented above, so use the cast/failure attempt ID when exact
+generation correlation is required.
+
 Nampower never cooldown-queues or retries a server rejection whose attempt ID is
 `"0"`; guessing a same-spell generation could replay the cast on the wrong
 captured target.

@@ -325,8 +325,11 @@ namespace Nampower {
                             gCastData.cooldownNonGcdSpellQueued = true;
                             gCastData.cooldownNonGcdEndMs = spellCooldown + currentTime;
 
+                            // Queue callbacks run Lua synchronously and may push
+                            // history. Preserve this exact generation and target.
+                            auto const retryParams = *castParams;
                             TriggerSpellQueuedEvent(QueueEvents::NON_GCD_QUEUED, spellId);
-                            gNonGcdCastQueue.push(*castParams, gUserSettings.replaceMatchingNonGcdCategory);
+                            gNonGcdCastQueue.push(retryParams, gUserSettings.replaceMatchingNonGcdCategory);
                         } else {
                             DEBUG_LOG("Spell " << game::GetSpellName(spellId) << " is still on cooldown "
                                 << spellCooldown
@@ -334,8 +337,11 @@ namespace Nampower {
                             gCastData.cooldownNormalSpellQueued = true;
                             gCastData.cooldownNormalEndMs = spellCooldown + currentTime;
 
+                            // Queue callbacks run Lua synchronously and may push
+                            // history. Preserve this exact generation and target.
+                            auto const retryParams = *castParams;
                             TriggerSpellQueuedEvent(QueueEvents::NORMAL_QUEUED, spellId);
-                            gLastNormalCastParams = *castParams;
+                            gLastNormalCastParams = retryParams;
                         }
                         return;
                     } else {
@@ -396,9 +402,10 @@ namespace Nampower {
                                 << ", retry " << castParams->numRetries
                                 << " result " << castParams->castResult);
                             gCastData.delayEndMs = currentTime + gBufferTimeMs; // retry after buffer delay
+                            auto const retryParams = *castParams;
                             TriggerSpellQueuedEvent(QueueEvents::NON_GCD_QUEUED, spellId);
                             gCastData.nonGcdSpellQueued = true;
-                            gNonGcdCastQueue.push(*castParams, gUserSettings.replaceMatchingNonGcdCategory);
+                            gNonGcdCastQueue.push(retryParams, gUserSettings.replaceMatchingNonGcdCategory);
                         } else {
                             // if gcd is active, do nothing
                             if (gCastData.gcdEndMs > currentTime) {
@@ -411,9 +418,10 @@ namespace Nampower {
                                     << ", retry " << castParams->numRetries
                                     << " result " << castParams->castResult);
 
+                                auto const retryParams = *castParams;
                                 TriggerSpellQueuedEvent(QueueEvents::NORMAL_QUEUED, spellId);
                                 gCastData.normalSpellQueued = true;
-                                gLastNormalCastParams = *castParams;
+                                gLastNormalCastParams = retryParams;
                             }
                         }
                     } else {

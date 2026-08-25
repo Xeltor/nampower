@@ -19,6 +19,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Check retry reentrancy invariants
+      run: python tests/retry_reentrancy_static_test.py
+
     - name: Download hadesmem release
       run: |
         Invoke-WebRequest https://github.com/namreeb/hadesmem/releases/download/v1.7.0/hadesmem-v142-Release-Win32.zip -OutFile hadesmem.zip
