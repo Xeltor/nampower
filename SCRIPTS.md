@@ -43,7 +43,7 @@ For custom events, see [EVENTS.md](EVENTS.md). For installation, configuration, 
     - [GetRaidTargets](#getraidtargets)
     - [SetLocalRaidTargetIndex](#setlocalraidtargetindexunittoken-raidtargetindex)
   - [Spell Casting and Queuing](#spell-casting-and-queuing)
-    - [QueueSpellByName](#queuespellbynamespellname)
+    - [QueueSpellByName](#queuespellbynamespellname-onselforunit)
     - [CastSpellByNameNoQueue](#castspellbynamenoqueuespellname-onselforunit)
     - [CastSpellNoQueue](#castspellnoqueuespellid-spellbook--unit)
     - [QueueScript](#queuescriptscript-priority)
@@ -992,13 +992,24 @@ SetLocalRaidTargetIndex("0xF5300000000000A5", 1)
 
 ### Spell Casting and Queuing
 
-#### QueueSpellByName(spellName)
+#### QueueSpellByName(spellName, [onSelfOrUnit])
 Will force queue a spell regardless of the appropriate queue window.  If no spell is currently being cast it will be cast immediately.
+The optional second parameter accepts the same unit token or GUID string as the
+enhanced `CastSpellByName`. Nampower retains that exact target while the spell is
+queued, so a later target selection change does not redirect the queued cast.
 For example can make a macro with
 ```
 /run QueueSpellByName("Frostbolt");QueueSpellByName("Frostbolt")
 ```
 to cast 2 frostbolts in a row.  Currently, can only queue 1 GCD spell at a time and 5 non gcd spells.  This means you can't do 3 frostbolts in a row with one macro.
+
+```lua
+-- Pin the queued heal to this unit even if the selected target changes.
+QueueSpellByName("Healing Touch", "party1")
+
+-- Full GUID strings are supported without conversion through Lua numbers.
+QueueSpellByName("Serpent Sting", "0xF5300000000000A5")
+```
 
 #### CastSpellByName(spellName, [onSelfOrUnit])
 The vanilla `CastSpellByName` is enhanced to accept a unit token string (e.g. "mouseover", "party1", "focus", etc.) or a GUID string as the second parameter to cast on that unit.  The original behavior of passing `1` to cast on self is preserved.

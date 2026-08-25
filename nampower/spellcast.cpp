@@ -6,9 +6,27 @@
 #include "helper.hpp"
 #include "offsets.hpp"
 #include "logging.hpp"
+#include <string>
 
 namespace Nampower {
     auto const APPLY_BUFFER_TO_GCD = false; // gcd issue seems fixed for now
+    class ActiveAttemptScope {
+        uint64_t previousId;
+        uint32_t previousSpellId;
+
+    public:
+        ActiveAttemptScope(uint64_t attemptId, uint32_t spellId)
+            : previousId(gActiveAttemptId), previousSpellId(gActiveAttemptSpellId) {
+            gActiveAttemptId = attemptId;
+            gActiveAttemptSpellId = spellId;
+        }
+
+        ~ActiveAttemptScope() {
+            gActiveAttemptId = previousId;
+            gActiveAttemptSpellId = previousSpellId;
+        }
+    };
+
     void SetReleaseAction(uint32_t input) {
         uint32_t activeControl = *reinterpret_cast<uint32_t *>(Offsets::CGInputControlGetActive);
 
@@ -166,7 +184,18 @@ namespace Nampower {
         auto const spellOnGcd = SpellIsOnGcd(spell);
         gLastCastData.wasOnGcd = spellOnGcd;
 
-        auto lastCastParams = gCastHistory.peek();
+        CastSpellParams *lastCastParams = nullptr;
+        if (gActiveAttemptId != 0 && gActiveAttemptSpellId == spell->Id) {
+            lastCastParams = gCastHistory.findCastId(gActiveAttemptId);
+        }
+        if (lastCastParams == nullptr) {
+            // Preserve legacy bookkeeping for unscoped/reentrant paths, but do
+            // not later expose this heuristic entry as an exact attempt match.
+            lastCastParams = gCastHistory.peek();
+            if (lastCastParams != nullptr) {
+                lastCastParams->resultCorrelationAmbiguous = true;
+            }
+        }
         uint64_t lastCastId = 0;
         if (lastCastParams != nullptr) {
             gLastCastData.wasItem = lastCastParams->item != nullptr;
@@ -305,6 +334,7 @@ namespace Nampower {
                         uint32_t castStartTimeMs,
                         CastType castType,
                         uint32_t numRetries) {
+        params->castId = 0;
         params->casterUnit = casterUnit;
         params->spellId = spellId;
         params->item = item;
@@ -315,6 +345,8 @@ namespace Nampower {
         params->castStartTimeMs = castStartTimeMs;
         params->castType = castType;
         params->numRetries = numRetries;
+        params->castResult = CastResult::WAITING_FOR_CAST;
+        params->resultCorrelationAmbiguous = false;
     }
 
     void TriggerSpellQueuedEvent(QueueEvents queueEventCode, uint32_t spellId) {
@@ -326,23 +358,26 @@ namespace Nampower {
     }
 
     void
-    TriggerSpellCastEvent(bool result, uint32_t spellId, CastType castType, std::uint64_t guid, uint32_t itemId) {
-        static char format[] = "%d%d%d%s%d";
+    TriggerSpellCastEvent(bool result, uint32_t spellId, CastType castType, std::uint64_t guid, uint32_t itemId,
+                          uint64_t attemptId) {
+        static char format[] = "%d%d%d%s%d%s";
 
         if (!guid) {
             // default to current target
             guid = game::GetCurrentTargetGuid();
         }
         char *guidStr = ConvertGuidToString(guid);
+        auto attemptIdString = std::to_string(attemptId);
 
-        ((int (__cdecl *)(int, char *, uint32_t, uint32_t, uint32_t, char *, uint32_t)) Offsets::SignalEventParam)(
+        ((int (__cdecl *)(int, char *, uint32_t, uint32_t, uint32_t, char *, uint32_t, char *)) Offsets::SignalEventParam)(
             game::SPELL_CAST_EVENT, // SPELL_CAST_EVENT event we are adding
             format,
             result,
             spellId,
             castType,
             guidStr,
-            itemId);
+            itemId,
+            const_cast<char *>(attemptIdString.c_str()));
 
         FreeGuidString(guidStr);
     }
@@ -573,8 +608,9 @@ namespace Nampower {
                            castTime,
                            currentTime, ON_SWING, 0);
 
+            auto const attemptId = gNextCastId++;
             gCastHistory.pushFront({
-                gNextCastId, casterUnit, spellId, item, guidForHistory,
+                attemptId, casterUnit, spellId, item, guidForHistory,
                 spell->StartRecoveryCategory,
                 castTime,
                 currentTime,
@@ -582,13 +618,15 @@ namespace Nampower {
                 gCastData.numRetries,
                 CastResult::WAITING_FOR_CAST
             });
-            gNextCastId++;
-
             // try to cast the spell
             auto const castSpell = detour->GetTrampolineT<Spell_C_CastSpellT>();
-            auto ret = castSpell(casterUnit, spellId, item, guid);
+            bool ret;
+            {
+                ActiveAttemptScope activeAttempt(attemptId, spellId);
+                ret = castSpell(casterUnit, spellId, item, guid);
+            }
 
-            TriggerSpellCastEvent(ret, spellId, ON_SWING, guid, itemId);
+            TriggerSpellCastEvent(ret, spellId, ON_SWING, guid, itemId, attemptId);
 
             if (ret) {
                 gCastData.pendingOnSwingCast = true;
@@ -843,8 +881,9 @@ namespace Nampower {
             castType = CastType::NON_GCD;
         }
 
+        auto const attemptId = gNextCastId++;
         gCastHistory.pushFront({
-            gNextCastId, casterUnit, spellId, item, guidForHistory,
+            attemptId, casterUnit, spellId, item, guidForHistory,
             spell->StartRecoveryCategory,
             castTime,
             currentTime,
@@ -852,13 +891,15 @@ namespace Nampower {
             gCastData.numRetries,
             CastResult::WAITING_FOR_CAST
         });
-        gNextCastId++;
-
-        auto ret = castSpell(casterUnit, spellId, item, guid);
+        bool ret;
+        {
+            ActiveAttemptScope activeAttempt(attemptId, spellId);
+            ret = castSpell(casterUnit, spellId, item, guid);
+        }
 
         // if this is a trade skill or item enchant, do nothing further
         if (isSpecialSpell) {
-            TriggerSpellCastEvent(ret, spellId, castType, guid, itemId);
+            TriggerSpellCastEvent(ret, spellId, castType, guid, itemId, attemptId);
             return ret;
         }
 
@@ -886,7 +927,10 @@ namespace Nampower {
                 clearCastingSpell();
 
                 // try again now that cast bar is gone
-                ret = castSpell(casterUnit, spellId, item, guid);
+                {
+                    ActiveAttemptScope activeAttempt(attemptId, spellId);
+                    ret = castSpell(casterUnit, spellId, item, guid);
+                }
 
                 auto const cursorMode = *reinterpret_cast<int *>(Offsets::CursorMode);
                 if (!ret && !(spell->Attributes & game::SPELL_ATTR_RANGED) && cursorMode != 2) {
@@ -899,7 +943,7 @@ namespace Nampower {
             }
         }
 
-        TriggerSpellCastEvent(ret, spellId, castType, guid, itemId);
+        TriggerSpellCastEvent(ret, spellId, castType, guid, itemId, attemptId);
 
         return ret;
     }

@@ -29,6 +29,7 @@ For custom Lua functions, see [SCRIPTS.md](SCRIPTS.md). For general usage inform
 ## Table of Contents
 - [SPELL_QUEUE_EVENT](#spell_queue_event)
 - [SPELL_CAST_EVENT](#spell_cast_event)
+- [SPELL_CAST_RESULT_SELF](#spell_cast_result_self)
 - [SPELL_START_SELF and SPELL_START_OTHER](#spell_start_self-and-spell_start_other)
 - [SPELL_GO_SELF and SPELL_GO_OTHER](#spell_go_self-and-spell_go_other)
 - [SPELL_FAILED_SELF and SPELL_FAILED_OTHER](#spell_failed_self-and-spell_failed_other)
@@ -95,12 +96,13 @@ NampowerSettings:RegisterEvent("SPELL_QUEUE_EVENT", spellQueueEvent)
 ### SPELL_CAST_EVENT
 Event you can register in game to get updates when you cast spells with some additional information.  This will only fire for spells you (and certain pets) initiated. Triggered when you start casting a spell in the client before it is sent to the server.
 
-The event is `SPELL_CAST_EVENT` and has 5 parameters:
+The event is `SPELL_CAST_EVENT` and has 6 parameters:
 1.  int success - 1 if cast succeeded, 0 if failed
 2.  int spellId
 3.  int castType - see below
 4.  string targetGuid - guid string like "0xF5300000000000A5"
 5.  int itemId - the id of the item that triggered the spell, 0 if it wasn't triggered by an item
+6.  string attemptId - opaque decimal identifier for this exact client cast attempt
 
 Possible Cast Types:
 ```
@@ -118,13 +120,60 @@ targetGuid will be "0x000000000" unless an explicit target is specified which cu
 
 Example (uses ace RegisterEvent):
 ```
-Cursive:RegisterEvent("SPELL_CAST_EVENT", function(success, spellId, castType, targetGuid, itemId)
+Cursive:RegisterEvent("SPELL_CAST_EVENT", function(success, spellId, castType, targetGuid, itemId, attemptId)
 	print(success)
 	print(spellId)
 	print(castType)
 	print(targetGuid)
 	print(itemId)
+	print(attemptId)
 end);
+```
+
+`attemptId` was added in Nampower 4.7.0. Treat it as an opaque string: the
+1.12 Lua number type cannot preserve every 64-bit integer exactly. The same ID
+is supplied by `SPELL_CAST_RESULT_SELF` and by matching
+`SPELL_FAILED_SELF` events when the server response can be correlated
+unambiguously.
+
+### SPELL_CAST_RESULT_SELF
+Fires when the server accepts or rejects an active-player spell. Unlike
+`SPELL_CAST_EVENT`, this is server-result evidence. Added in Nampower 4.7.0.
+
+The 1.12 server packet contains a spell ID but no client cast sequence. Nampower
+therefore supplies a nonzero `attemptId` and its captured target only when
+exactly one same-spell cast-history entry is waiting for a server response. If
+none or multiple entries match, the result still fires but uses attempt ID
+`"0"` and the zero GUID. Consumers must treat that as uncorrelated evidence.
+Once a packet encounters multiple waiting generations, every unresolved member
+of that cohort remains uncorrelated; a later packet becoming the only remaining
+entry does not retroactively make its identity knowable. An unresolved entry
+evicted from the bounded history also leaves a per-spell ambiguity tombstone
+until the next player-script/world load.
+
+For a server rejection, this event is deliberately emitted before Nampower calls
+the original client handler. The resulting `SPELL_FAILED_SELF` event follows,
+and a configured Nampower retry may then synchronously emit
+`SPELL_QUEUE_EVENT` code 2. A local client rejection can instead emit
+`SPELL_FAILED_SELF` inside the cast call before the corresponding
+`SPELL_CAST_EVENT`. Consumers must tolerate both orders and use the attempt ID
+rather than assuming arrival order proves identity.
+
+Parameters:
+1.  int success - 1 when the server accepted the cast, 0 when it rejected it
+2.  int spellId
+3.  string targetGuid - the target captured for a uniquely matched attempt, or the zero GUID when unavailable or ambiguous
+4.  int spellResult - 0 on success, otherwise the SpellCastResult enum value
+5.  string attemptId - opaque decimal identifier matching `SPELL_CAST_EVENT` argument 6; `"0"` when no unique cast-history entry could be correlated
+
+```lua
+frame:RegisterEvent("SPELL_CAST_RESULT_SELF")
+frame:SetScript("OnEvent", function()
+    if event == "SPELL_CAST_RESULT_SELF" then
+        local success, spellId, targetGuid, result, attemptId =
+            arg1, arg2, arg3, arg4, arg5
+    end
+end)
 ```
 
 ### SPELL_START_SELF and SPELL_START_OTHER
@@ -179,6 +228,7 @@ Parameters for `SPELL_FAILED_SELF`:
 1.  int spellId
 2.  int spellResult - SpellCastResult enum value
 3.  int failedByServer - 1 if failed by server, 0 otherwise
+4.  string attemptId - opaque decimal attempt identifier, or `"0"` when unavailable (added in Nampower 4.7.0)
 
 Parameters for `SPELL_FAILED_OTHER`:
 1.  string casterGuid - caster guid like "0xF5300000000000A5"

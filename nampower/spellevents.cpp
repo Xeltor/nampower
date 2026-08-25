@@ -8,6 +8,7 @@
 #include "spellcast.hpp"
 #include "helper.hpp"
 #include "cooldown.hpp"
+#include <string>
 
 namespace Nampower {
     uint32_t lastCastResultTimeMs;
@@ -54,19 +55,50 @@ namespace Nampower {
 
     void TriggerSpellFailedSelfEvent(uint32_t spellId,
                                      game::SpellCastResult spellResult,
-                                     bool failedByServer) {
-        static char format[] = "%d%d%d";
+                                     bool failedByServer,
+                                     uint64_t attemptId) {
+        static char format[] = "%d%d%d%s";
+        auto attemptIdString = std::to_string(attemptId);
 
         ((int (__cdecl *)(int eventCode,
                           char *fmt,
                           uint32_t spellIdParam,
                           uint32_t spellResultParam,
-                          uint32_t failedByServerParam)) Offsets::SignalEventParam)(
+                          uint32_t failedByServerParam,
+                          char *attemptIdParam)) Offsets::SignalEventParam)(
             game::SPELL_FAILED_SELF,
             format,
             spellId,
             static_cast<uint32_t>(spellResult),
-            failedByServer ? 1 : 0);
+            failedByServer ? 1 : 0,
+            const_cast<char *>(attemptIdString.c_str()));
+    }
+
+    void TriggerSpellCastResultSelfEvent(bool success,
+                                         uint32_t spellId,
+                                         uint64_t targetGuid,
+                                         uint32_t spellResult,
+                                         uint64_t attemptId) {
+        static char format[] = "%d%d%s%d%s";
+        char *targetGuidStr = ConvertGuidToString(targetGuid);
+        auto attemptIdString = std::to_string(attemptId);
+
+        ((int (__cdecl *)(int eventCode,
+                          char *fmt,
+                          uint32_t successParam,
+                          uint32_t spellIdParam,
+                          char *targetGuidParam,
+                          uint32_t spellResultParam,
+                          char *attemptIdParam)) Offsets::SignalEventParam)(
+            game::SPELL_CAST_RESULT_SELF,
+            format,
+            success ? 1 : 0,
+            spellId,
+            targetGuidStr,
+            spellResult,
+            const_cast<char *>(attemptIdString.c_str()));
+
+        FreeGuidString(targetGuidStr);
     }
 
     void TriggerSpellFailedOtherEvent(uint64_t casterGuid,
@@ -211,6 +243,12 @@ namespace Nampower {
 
     void Spell_C_SpellFailedHook(hadesmem::PatchDetourBase *detour, uint32_t spellId,
                                  game::SpellCastResult spellResult, int unk1, int unk2, bool failedByServer) {
+        uint64_t attemptId = 0;
+        if (failedByServer && gServerResultSpellId == spellId) {
+            attemptId = gServerResultCastId;
+        } else if (!failedByServer && gActiveAttemptSpellId == spellId) {
+            attemptId = gActiveAttemptId;
+        }
         auto const spellFailed = detour->GetTrampolineT<Spell_C_SpellFailedT>();
         spellFailed(spellId, spellResult, unk1, unk2, failedByServer);
 
@@ -241,7 +279,7 @@ namespace Nampower {
             return;
         }
 
-        TriggerSpellFailedSelfEvent(spellId, spellResult, failedByServer);
+        TriggerSpellFailedSelfEvent(spellId, spellResult, failedByServer, attemptId);
 
         ResetCastFlags();
 
@@ -513,17 +551,17 @@ namespace Nampower {
         uint8_t spellCastResult;
 
         if (status != 0) {
+            // The failure reason is one byte. Optional failure arguments follow
+            // it, but are not part of SpellCastResult and must not overwrite it.
             packet->Get(spellCastResult);
         } else {
             spellCastResult = 0;
         }
 
-        packet->Get(spellCastResult);
-
         packet->m_read = rpos;
 
-        auto const currentLatency = GetLatencyMs();
         auto currentTime = GetTime();
+        auto const currentLatency = GetLatencyMs();
 
         // Reset the server delay in case we aren't able to calculate it
         gLastServerSpellDelayMs = 0;
@@ -551,6 +589,16 @@ namespace Nampower {
             }
         }
 
+        // SMSG_CAST_RESULT has no client cast sequence. An attempt identity is
+        // therefore authoritative only when exactly one outstanding history
+        // entry has this spell ID. Keep the historical oldest/newest heuristic
+        // below for internal bookkeeping, but never expose it as exact.
+        auto uniqueCastParams =
+            gCastHistory.findUniqueWaitingForServerSpellId(spellId);
+        auto const correlatedCastId = uniqueCastParams
+            ? uniqueCastParams->castId : 0;
+        auto const correlatedTargetGuid = uniqueCastParams
+            ? uniqueCastParams->guid : 0;
         uint64_t matchingCastId = 0;
 
         // update cast history
@@ -588,8 +636,21 @@ namespace Nampower {
         }
 
         lastCastResultTimeMs = currentTime;
-
-        return castResultHandler(opCode, packet);
+        // Emit before the original client handler: on rejection it can trigger
+        // SPELL_FAILED_SELF and then synchronously enqueue a retry. Addons use
+        // this ordering to keep one attempt generation owned across the retry.
+        TriggerSpellCastResultSelfEvent(status == 0,
+                                        spellId, correlatedTargetGuid,
+                                        status == 0 ? 0 : spellCastResult,
+                                        correlatedCastId);
+        auto const previousResultCastId = gServerResultCastId;
+        auto const previousResultSpellId = gServerResultSpellId;
+        gServerResultCastId = correlatedCastId;
+        gServerResultSpellId = spellId;
+        auto result = castResultHandler(opCode, packet);
+        gServerResultCastId = previousResultCastId;
+        gServerResultSpellId = previousResultSpellId;
+        return result;
     }
 
     int SpellFailedOtherHandlerHook(hadesmem::PatchDetourBase *detour, uint32_t *opCode, CDataStore *packet) {

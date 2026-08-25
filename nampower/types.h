@@ -106,6 +106,7 @@ struct CastSpellParams {
     CastType castType;
     uint32_t numRetries;
     CastResult castResult;
+    bool resultCorrelationAmbiguous;
 };
 
 struct LastCastData {

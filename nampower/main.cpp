@@ -103,6 +103,10 @@ namespace Nampower {
     CastQueue gNonGcdCastQueue = CastQueue(6);
 
     CastQueue gCastHistory = CastQueue(30);
+    uint64_t gActiveAttemptId = 0;
+    uint32_t gActiveAttemptSpellId = 0;
+    uint64_t gServerResultCastId = 0;
+    uint32_t gServerResultSpellId = 0;
 
 
     std::unique_ptr<hadesmem::PatchDetour<WowSysMessageOutputInitializeT> > gSysMsgInitDetour;
@@ -1691,6 +1695,9 @@ namespace Nampower {
         char SPELL_CAST_EVENT[] = "SPELL_CAST_EVENT";
         addCustomEvent(game::SPELL_CAST_EVENT, SPELL_CAST_EVENT);
 
+        char SPELL_CAST_RESULT_SELF[] = "SPELL_CAST_RESULT_SELF";
+        addCustomEvent(game::SPELL_CAST_RESULT_SELF, SPELL_CAST_RESULT_SELF);
+
         char SPELL_DAMAGE_EVENT_SELF[] = "SPELL_DAMAGE_EVENT_SELF";
         addCustomEvent(game::SPELL_DAMAGE_EVENT_SELF, SPELL_DAMAGE_EVENT_SELF);
 
@@ -1946,6 +1953,13 @@ namespace Nampower {
         auto const loadScriptFunctions = detour->GetTrampolineT<LoadScriptFunctionsT>();
         loadScriptFunctions();
 
+        // A UI/world script reload invalidates response correlation from the
+        // prior player context. Keep gNextCastId monotonic across the DLL life.
+        gCastHistory.clear();
+        gActiveAttemptId = 0;
+        gActiveAttemptSpellId = 0;
+        gServerResultCastId = 0;
+        gServerResultSpellId = 0;
         CleanupAllLuaTableRefs();
         ClearItemCaches();
 

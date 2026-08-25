@@ -2,6 +2,7 @@
 
 #include "types.h"
 #include "logging.hpp"
+#include <unordered_set>
 #include <vector>
 
 namespace Nampower {
@@ -12,6 +13,7 @@ namespace Nampower {
         int front;
         int rear;
         int size;
+        std::unordered_set<uint32_t> unresolvedEvictionSpellIds;
 
     public:
         explicit CastQueue(int maxSize)
@@ -29,10 +31,18 @@ namespace Nampower {
             front = 0;
             rear = -1;
             size = 0;
+            unresolvedEvictionSpellIds.clear();
         }
 
         void pushFront(const CastSpellParams &params) {
             if (isFull()) {
+                auto const &evicted = queue[(front + size - 1) % maxSize];
+                if (evicted.castResult == CastResult::WAITING_FOR_SERVER) {
+                    // Once an unresolved generation is lost, a later packet
+                    // with this spell ID can never be mapped exactly again in
+                    // this player context. Preserve a conservative tombstone.
+                    unresolvedEvictionSpellIds.insert(evicted.spellId);
+                }
                 // Shift all elements one position to the right
                 for (int i = size - 1; i > 0; --i) {
                     queue[(front + i) % maxSize] = queue[(front + i - 1) % maxSize];
@@ -105,6 +115,16 @@ namespace Nampower {
             return nullptr;
         }
 
+        CastSpellParams *findCastId(uint64_t castId) {
+            for (int i = 0; i < size; i++) {
+                int index = (front + i) % maxSize;
+                if (queue[index].castId == castId) {
+                    return &queue[index];
+                }
+            }
+            return nullptr;
+        }
+
         bool removeSpellId(uint32_t spellId) {
             for (int i = 0; i < size; i++) {
                 int index = (front + i) % maxSize;
@@ -141,6 +161,37 @@ namespace Nampower {
                 }
             }
             return nullptr;
+        }
+
+        CastSpellParams *findUniqueWaitingForServerSpellId(uint32_t spellId) {
+            if (unresolvedEvictionSpellIds.find(spellId)
+                != unresolvedEvictionSpellIds.end()) {
+                return nullptr;
+            }
+            CastSpellParams *match = nullptr;
+            int matches = 0;
+            for (int i = 0; i < size; i++) {
+                int index = (front + i) % maxSize;
+                if (queue[index].spellId == spellId
+                    && queue[index].castResult == CastResult::WAITING_FOR_SERVER) {
+                    matches++;
+                    match = &queue[index];
+                }
+            }
+            if (matches > 1) {
+                for (int i = 0; i < size; i++) {
+                    int index = (front + i) % maxSize;
+                    if (queue[index].spellId == spellId
+                        && queue[index].castResult == CastResult::WAITING_FOR_SERVER) {
+                        queue[index].resultCorrelationAmbiguous = true;
+                    }
+                }
+                return nullptr;
+            }
+            if (match && match->resultCorrelationAmbiguous) {
+                return nullptr;
+            }
+            return match;
         }
 
         CastSpellParams *findNewestSuccessfulSpellId(uint32_t spellId) {

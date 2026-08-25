@@ -234,6 +234,7 @@ For complete documentation of all custom events added by Nampower, see **[EVENTS
 Available events:
 - SPELL_QUEUE_EVENT - Fires when spells are queued or dequeued
 - SPELL_CAST_EVENT - Fires when you cast a spell with additional information. Triggered when you start casting a spell in the client before it is sent to the server.
+- SPELL_CAST_RESULT_SELF - Fires when the server accepts or rejects an active-player cast and includes the opaque attempt ID introduced in Nampower 4.7.0 when the response has one unambiguous same-spell history match.
 - SPELL_START_SELF and SPELL_START_OTHER - Triggered by the server to notify that a spell with a cast time has begun.
 - SPELL_GO_SELF and SPELL_GO_OTHER - Triggered by the server to indicate a spell completed casting.
 - SPELL_DAMAGE_EVENT_SELF and SPELL_DAMAGE_EVENT_OTHER - Combat damage events
