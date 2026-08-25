@@ -67,8 +67,9 @@ namespace Nampower {
             lua_pushnumber(luaState, 0);
         }
 
-        auto const attackPtr = playerUnit + 0x312; // auto attacking
-        if (attackPtr && *reinterpret_cast<uint32_t *>(attackPtr) > 0) {
+        // The active player object is temporarily unavailable during world
+        // transitions. Only inspect its auto-attack field while it exists.
+        if (playerUnit && *reinterpret_cast<uint32_t *>(playerUnit + 0x312) > 0) {
             lua_pushnumber(luaState, 1);
         } else {
             lua_pushnumber(luaState, 0);
