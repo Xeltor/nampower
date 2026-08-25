@@ -158,6 +158,9 @@ and a configured Nampower retry may then synchronously emit
 `SPELL_FAILED_SELF` inside the cast call before the corresponding
 `SPELL_CAST_EVENT`. Consumers must tolerate both orders and use the attempt ID
 rather than assuming arrival order proves identity.
+Nampower never cooldown-queues or retries a server rejection whose attempt ID is
+`"0"`; guessing a same-spell generation could replay the cast on the wrong
+captured target.
 
 Parameters:
 1.  int success - 1 when the server accepted the cast, 0 when it rejected it

@@ -249,6 +249,11 @@ namespace Nampower {
         } else if (!failedByServer && gActiveAttemptSpellId == spellId) {
             attemptId = gActiveAttemptId;
         }
+        auto attemptParams = attemptId != 0
+            ? gCastHistory.findCastId(attemptId) : nullptr;
+        if (attemptParams == nullptr || attemptParams->spellId != spellId) {
+            attemptId = 0;
+        }
         auto const spellFailed = detour->GetTrampolineT<Spell_C_SpellFailedT>();
         spellFailed(spellId, spellResult, unk1, unk2, failedByServer);
 
@@ -292,44 +297,47 @@ namespace Nampower {
              spellResult == game::SpellCastResult::SPELL_FAILED_SPELL_IN_PROGRESS)
         ) {
             auto const currentTime = GetTime();
+            auto castParams = attemptId != 0
+                ? gCastHistory.findCastId(attemptId) : nullptr;
+            if (castParams == nullptr || castParams->spellId != spellId) {
+                DEBUG_LOG("Not retrying uncorrelated failure for "
+                    << game::GetSpellName(spellId) << " code "
+                    << int(spellResult));
+                return;
+            }
 
             if (spellResult == game::SpellCastResult::SPELL_FAILED_NOT_READY) {
                 // check if spell is just on cooldown still
                 auto const spellCooldown = GetRemainingCooldownForSpell(spellId);
                 if (spellCooldown > 0) {
-                    auto castParams = gCastHistory.findSpellId(spellId);
-                    if (castParams) {
-                        // mark as failed so it can be cast again
-                        castParams->castResult = CastResult::SERVER_FAILURE;
-                        // set flag to avoid canceling spell cast
-                        gCastData.ignoreCancelDueToCooldown = true;
-                    }
+                    // Mark only the correlated attempt as failed so a
+                    // same-spell generation for another target is untouched.
+                    castParams->castResult = CastResult::SERVER_FAILURE;
+                    gCastData.ignoreCancelDueToCooldown = true;
 
                     // check if we should do cooldown queuing
                     if (gUserSettings.queueSpellsOnCooldown && spellCooldown < gUserSettings.cooldownQueueWindowMs) {
-                        if (castParams) {
-                            if (castParams->castType == CastType::NON_GCD ||
-                                castParams->castType == CastType::TARGETING_NON_GCD) {
-                                DEBUG_LOG("Non gcd spell " << game::GetSpellName(spellId) << " is still on cooldown "
-                                    << spellCooldown
-                                    << " queuing retry");
-                                gCastData.cooldownNonGcdSpellQueued = true;
-                                gCastData.cooldownNonGcdEndMs = spellCooldown + currentTime;
+                        if (castParams->castType == CastType::NON_GCD ||
+                            castParams->castType == CastType::TARGETING_NON_GCD) {
+                            DEBUG_LOG("Non gcd spell " << game::GetSpellName(spellId) << " is still on cooldown "
+                                << spellCooldown
+                                << " queuing retry");
+                            gCastData.cooldownNonGcdSpellQueued = true;
+                            gCastData.cooldownNonGcdEndMs = spellCooldown + currentTime;
 
-                                TriggerSpellQueuedEvent(QueueEvents::NON_GCD_QUEUED, spellId);
-                                gNonGcdCastQueue.push(*castParams, gUserSettings.replaceMatchingNonGcdCategory);
-                            } else {
-                                DEBUG_LOG("Spell " << game::GetSpellName(spellId) << " is still on cooldown "
-                                    << spellCooldown
-                                    << " queuing retry");
-                                gCastData.cooldownNormalSpellQueued = true;
-                                gCastData.cooldownNormalEndMs = spellCooldown + currentTime;
+                            TriggerSpellQueuedEvent(QueueEvents::NON_GCD_QUEUED, spellId);
+                            gNonGcdCastQueue.push(*castParams, gUserSettings.replaceMatchingNonGcdCategory);
+                        } else {
+                            DEBUG_LOG("Spell " << game::GetSpellName(spellId) << " is still on cooldown "
+                                << spellCooldown
+                                << " queuing retry");
+                            gCastData.cooldownNormalSpellQueued = true;
+                            gCastData.cooldownNormalEndMs = spellCooldown + currentTime;
 
-                                TriggerSpellQueuedEvent(QueueEvents::NORMAL_QUEUED, spellId);
-                                gLastNormalCastParams = *castParams;
-                            }
-                            return;
+                            TriggerSpellQueuedEvent(QueueEvents::NORMAL_QUEUED, spellId);
+                            gLastNormalCastParams = *castParams;
                         }
+                        return;
                     } else {
                         DEBUG_LOG("Spell " << game::GetSpellName(spellId) << " is still on cooldown " << spellCooldown);
                         return;
@@ -337,8 +345,7 @@ namespace Nampower {
                 }
             } else if (spellResult == game::SpellCastResult::SPELL_FAILED_ITEM_NOT_READY) {
                 // check if item is just on cooldown still
-                auto castParams = gCastHistory.findSpellId(spellId);
-                if (castParams && castParams->item) {
+                if (castParams->item) {
                     auto const itemId = game::GetItemId(castParams->item);
                     auto const itemCooldown = GetItemCooldownDetail(itemId);
                     if (itemCooldown.cooldownRemainingMs > 0) {
@@ -362,8 +369,7 @@ namespace Nampower {
 
             uint64_t lastCastId = 0;
 
-            // otherwise see if we should retry the cast
-            auto castParams = gCastHistory.findSpellId(spellId);
+            // Otherwise retry only the exact attempt captured above.
             if (castParams) {
                 lastCastId = castParams->castId;
                 // if we find non retried cast params and the original cast time is within the last 500ms, retry the cast
