@@ -428,6 +428,28 @@ namespace Nampower {
         gNextDisenchantTimeMs = 0;
     }
 
+    void ResetPlayerContextState() {
+        // Queue records retain raw player/item pointers and Lua strings. None
+        // may cross a UI reload, character switch, or world-script boundary.
+        gCastHistory.clear();
+        gNonGcdCastQueue.clear();
+        gLastNormalCastParams = CastSpellParams{};
+        gLastOnSwingCastParams = CastSpellParams{};
+        gLastCastData = LastCastData{};
+        gCastData = CastData{};
+        gForceQueueCast = false;
+        gNoQueueCast = false;
+        gQueuesProcessed = false;
+        gLastServerSpellDelayMs = 0;
+        lastCastUsedServerDelay = false;
+        gActiveAttemptId = 0;
+        gActiveAttemptSpellId = 0;
+        gServerResultCastId = 0;
+        gServerResultSpellId = 0;
+        ResetQueuedScript();
+        ResetDisenchantState();
+    }
+
     void checkForStopChanneling() {
         if (gUserSettings.queueChannelingSpells && IsNonSwingSpellQueued()) {
             // for channels just end channeling
@@ -1953,13 +1975,9 @@ namespace Nampower {
         auto const loadScriptFunctions = detour->GetTrampolineT<LoadScriptFunctionsT>();
         loadScriptFunctions();
 
-        // A UI/world script reload invalidates response correlation from the
-        // prior player context. Keep gNextCastId monotonic across the DLL life.
-        gCastHistory.clear();
-        gActiveAttemptId = 0;
-        gActiveAttemptSpellId = 0;
-        gServerResultCastId = 0;
-        gServerResultSpellId = 0;
+        // Keep gNextCastId monotonic across the DLL life while discarding every
+        // prior-context queue, raw object pointer, and result correlation.
+        ResetPlayerContextState();
         CleanupAllLuaTableRefs();
         ClearItemCaches();
 

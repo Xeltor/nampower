@@ -95,6 +95,12 @@ namespace Nampower {
         return false;
     }
 
+    void ResetQueuedScript() {
+        gScriptQueued = false;
+        gScriptPriority = 1;
+        queuedScript = nullptr;
+    }
+
     uint32_t Script_IsAuraHidden(uintptr_t *luaState) {
         luaState = GetLuaStatePtr();
 

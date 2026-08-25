@@ -13,6 +13,7 @@ namespace Nampower {
     uint32_t Script_QueueScript(uintptr_t *luaState);
 
     bool RunQueuedScript(int priority);
+    void ResetQueuedScript();
 
     uint32_t Script_IsAuraHidden(uintptr_t *luaState);
     uint32_t Script_CombatLogFlush(uintptr_t *luaState);
