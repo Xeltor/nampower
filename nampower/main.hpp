@@ -27,7 +27,7 @@ namespace Nampower {
 
     constexpr uint32_t MAJOR_VERSION = 4;
     constexpr uint32_t MINOR_VERSION = 7;
-    constexpr uint32_t PATCH_VERSION = 0;
+    constexpr uint32_t PATCH_VERSION = 1;
 
     constexpr int32_t LUA_REGISTRYINDEX = -10000;
     constexpr int32_t LUA_GLOBALSINDEX = -10001;
@@ -60,7 +60,7 @@ namespace Nampower {
     extern CastData gCastData;
 
     extern CastSpellParams gLastNormalCastParams;
-    extern CastSpellParams gLastOnSwingCastParams;
+    extern OnSwingState gOnSwingState;
 
     extern CastQueue gNonGcdCastQueue;
     extern CastQueue gCastHistory;
@@ -221,8 +221,6 @@ namespace Nampower {
     void ResetChannelingFlags();
 
     void ResetCastFlags();
-
-    void ResetOnSwingFlags();
 
     void ClearQueuedSpells();
 

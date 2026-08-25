@@ -211,7 +211,7 @@ For complete documentation of all custom Lua functions added by Nampower, see **
 This includes functions for:
 - Spell/item/unit information (GetItemStats, GetSpellRec, GetUnitData, etc.)
 - Spell casting and queuing (QueueSpellByName, QueueScript, CastSpellByNameNoQueue, CastSpellNoQueue, etc.)
-- Cast information (GetCastInfo, GetCurrentCastingInfo)
+- Cast information (GetCastInfo, GetCurrentCastingInfo, GetOnSwingInfo)
 - Cooldown tracking (GetSpellIdCooldown, GetItemIdCooldown), including item metadata on cooldown detail tables
 - Inventory helpers (GetTrinketCooldown, GetTrinkets, GetAmmo)
 - Aura duration tracking, cancel helpers, and aura visibility checks (GetPlayerAuraDuration, CancelPlayerAuraSlot, CancelPlayerAuraSpellId, IsAuraHidden)
@@ -235,6 +235,7 @@ Available events:
 - SPELL_QUEUE_EVENT - Fires when spells are queued or dequeued
 - SPELL_CAST_EVENT - Fires when you cast a spell with additional information. Triggered when you start casting a spell in the client before it is sent to the server.
 - SPELL_CAST_RESULT_SELF - Fires when the server accepts or rejects an active-player cast and includes the opaque attempt ID introduced in Nampower 4.7.0 when the response has one unambiguous same-spell history match.
+- SPELL_ON_SWING_STATE - Exact armed/buffered on-next-swing lifecycle events with opaque attempt IDs, added in Nampower 4.7.1.
 - SPELL_START_SELF and SPELL_START_OTHER - Triggered by the server to notify that a spell with a cast time has begun.
 - SPELL_GO_SELF and SPELL_GO_OTHER - Triggered by the server to indicate a spell completed casting.
 - SPELL_DAMAGE_EVENT_SELF and SPELL_DAMAGE_EVENT_OTHER - Combat damage events

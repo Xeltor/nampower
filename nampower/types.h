@@ -82,6 +82,22 @@ enum QueueEvents {
     QUEUE_EVENT_COUNT // Keep track of the number of events
 };
 
+// Exact lifecycle transitions for player on-next-swing generations. These are
+// intentionally separate from the legacy two-argument SPELL_QUEUE_EVENT ABI,
+// which can identify a spell but not a particular cast attempt.
+enum OnSwingStateEvents {
+    ON_SWING_STATE_ARMED = 0,
+    ON_SWING_STATE_BUFFERED = 1,
+    ON_SWING_STATE_ARMED_REPLACED = 2,
+    ON_SWING_STATE_BUFFER_REPLACED = 3,
+    ON_SWING_STATE_BUFFER_POPPED = 4,
+    ON_SWING_STATE_CONSUMED = 5,
+    ON_SWING_STATE_FAILED = 6,
+    ON_SWING_STATE_CANCELLED = 7,
+    ON_SWING_STATE_BUFFER_CANCELLED = 8,
+    ON_SWING_STATE_EVENT_COUNT = 9
+};
+
 enum CastResult {
     WAITING_FOR_CAST,
     WAITING_FOR_SERVER,
@@ -107,6 +123,16 @@ struct CastSpellParams {
     uint32_t numRetries;
     CastResult castResult;
     bool resultCorrelationAmbiguous;
+};
+
+// The armed and buffered generations must own copies of their cast arguments.
+// Cast-history entries and synchronous Lua callbacks are both mutable, so
+// retaining pointers into either would make replay reentrant-unsafe.
+struct OnSwingState {
+    bool armed;
+    CastSpellParams armedParams;
+    bool buffered;
+    CastSpellParams bufferedParams;
 };
 
 struct LastCastData {

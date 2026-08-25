@@ -8,6 +8,7 @@
 #include "offsets.hpp"
 #include "dbc_fields.hpp"
 #include <cstring>
+#include <string>
 
 namespace Nampower {
     namespace LuaFields {
@@ -21,10 +22,19 @@ namespace Nampower {
         static char castDurationMs[] = "castDurationMs";
         static char gcdEndS[] = "gcdEndS";
         static char gcdRemainingMs[] = "gcdRemainingMs";
+        static char pending[] = "pending";
+        static char armed[] = "armed";
+        static char targetGuid[] = "targetGuid";
+        static char attemptId[] = "attemptId";
+        static char buffered[] = "buffered";
+        static char bufferedSpellId[] = "bufferedSpellId";
+        static char bufferedTargetGuid[] = "bufferedTargetGuid";
+        static char bufferedAttemptId[] = "bufferedAttemptId";
     }
 
     // Reusable table references to reduce memory allocations
     static int castInfoTableRef = LUA_REFNIL;
+    static int onSwingInfoTableRef = LUA_REFNIL;
     static int spellRecTableRef = LUA_REFNIL;
 
     // Map to store separate references for each array field name (for Field function)
@@ -76,6 +86,44 @@ namespace Nampower {
         }
 
         return 7;
+    }
+
+    uint32_t Script_GetOnSwingInfo(uintptr_t *luaState) {
+        luaState = GetLuaStatePtr(); // custom pcall can corrupt the passed state pointer
+
+        auto const state = gOnSwingState;
+        if (!state.armed && !state.buffered) {
+            lua_pushnil(luaState);
+            return 1;
+        }
+
+        GetTableRef(luaState, onSwingInfoTableRef);
+
+        auto const armedSpellId = state.armed ? state.armedParams.spellId : 0;
+        auto const armedTargetGuid = state.armed ? state.armedParams.guid : 0;
+        auto const armedAttemptId = state.armed ? state.armedParams.castId : 0;
+        auto const bufferedSpellId = state.buffered ? state.bufferedParams.spellId : 0;
+        auto const bufferedTargetGuid = state.buffered ? state.bufferedParams.guid : 0;
+        auto const bufferedAttemptId = state.buffered ? state.bufferedParams.castId : 0;
+
+        char *armedTargetGuidString = ConvertGuidToString(armedTargetGuid);
+        char *bufferedTargetGuidString = ConvertGuidToString(bufferedTargetGuid);
+        auto armedAttemptIdString = std::to_string(armedAttemptId);
+        auto bufferedAttemptIdString = std::to_string(bufferedAttemptId);
+
+        PushTableValue(luaState, LuaFields::pending, state.armed ? 1U : 0U);
+        PushTableValue(luaState, LuaFields::armed, state.armed ? 1U : 0U);
+        PushTableValue(luaState, LuaFields::spellId, armedSpellId);
+        PushTableValue(luaState, LuaFields::targetGuid, armedTargetGuidString);
+        PushTableValue(luaState, LuaFields::attemptId, armedAttemptIdString.c_str());
+        PushTableValue(luaState, LuaFields::buffered, state.buffered ? 1U : 0U);
+        PushTableValue(luaState, LuaFields::bufferedSpellId, bufferedSpellId);
+        PushTableValue(luaState, LuaFields::bufferedTargetGuid, bufferedTargetGuidString);
+        PushTableValue(luaState, LuaFields::bufferedAttemptId, bufferedAttemptIdString.c_str());
+
+        FreeGuidString(armedTargetGuidString);
+        FreeGuidString(bufferedTargetGuidString);
+        return 1;
     }
 
     uint32_t Script_GetCastInfo(uintptr_t *luaState) {
@@ -277,12 +325,16 @@ namespace Nampower {
     uint32_t Script_SpellStopCastingHook(hadesmem::PatchDetourBase *detour, uintptr_t *luaState) {
         DEBUG_LOG("SpellStopCasting called");
 
-        ClearQueuedSpells();
-        ResetCastFlags();
-        ResetChannelingFlags();
-
+        // Complete the client cancellation before exact queue/state callbacks
+        // can re-enter and create a replacement generation. Nothing in this
+        // older stop frame may cancel or reset callback-created state.
         auto const spellStopCasting = detour->GetTrampolineT<LuaScriptT>();
-        return spellStopCasting(luaState);
+        auto const result = spellStopCasting(luaState);
+
+        ResetCastFlags();
+        ClearQueuedSpells();
+
+        return result;
     }
 
     uint32_t Script_IsSpellInRange(uintptr_t *luaState) {

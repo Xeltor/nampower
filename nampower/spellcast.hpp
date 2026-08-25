@@ -17,6 +17,16 @@ namespace Nampower {
 
     void TriggerSpellQueuedEvent(QueueEvents queueEventCode, uint32_t spellId);
 
+    void TriggerOnSwingStateEvent(OnSwingStateEvents stateEventCode, const CastSpellParams &params);
+
+    void CancelOnSwingState();
+
+    void FailOnSwingState(uint32_t spellId, uint64_t attemptId);
+
+    OnSwingState BeginOnSwingResolution(uint32_t spellId);
+
+    void FinishOnSwingResolution(const OnSwingState &resolvedState);
+
     void CGSpellBook_CastSpellHook(hadesmem::PatchDetourBase *detour, uint32_t spellSlot, int bookType,
                                    uint64_t target);
 

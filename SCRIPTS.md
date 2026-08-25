@@ -52,6 +52,7 @@ For custom events, see [EVENTS.md](EVENTS.md). For installation, configuration, 
     - [ChannelStopCastingNextTick](#channelstopcastingnexttick)
   - [Cast Information](#cast-information)
     - [GetCurrentCastingInfo](#getcurrentcastinginfo)
+    - [GetOnSwingInfo](#getonswinginfo)
     - [GetCastInfo](#getcastinfo)
   - [Cooldown Information](#cooldown-information)
     - [GetSpellIdCooldown](#getspellidcooldownspellid)
@@ -90,6 +91,7 @@ Nampower functions that return tables use **reusable table references** to reduc
 The following functions use reusable table references:
 
 - **`GetCastInfo()`** - Returns cast information table
+- **`GetOnSwingInfo()`** - Returns exact armed and buffered on-swing state
 - **`GetEquippedItems([unitToken])`** - Returns equipped items table
 - **`GetBagItems([bagIndex])`** - Returns bag items table
 - **`GetBagItem(bagIndex, slot)`** - Returns item info table
@@ -1093,6 +1095,43 @@ For normal spells these will be the same.  For some spells like auto-repeating a
 Examples:
 ```
 /run local castId,visId,autoId,casting,channeling,onswing,autoattack=GetCurrentCastingInfo();print(castId);print(visId);print(autoId);print(casting);print(channeling);print(onswing);print(autoattack);
+```
+
+#### GetOnSwingInfo()
+
+Returns the exact player on-next-swing state, or `nil` when neither an armed nor
+a buffered generation exists. Added in Nampower 4.7.1. This function recognizes
+both classic on-next-swing spell attribute bits (`0x4` and `0x400`).
+
+The returned table is reusable. Extract values immediately if they must outlive
+the current call.
+
+Fields:
+
+- `pending` (number): 1 when an armed generation exists, otherwise 0; backward-friendly alias of `armed`
+- `armed` (number): 1 when an armed generation exists, otherwise 0
+- `spellId` (number): armed spell ID, or 0
+- `targetGuid` (string): captured armed target, or `"0x0000000000000000"`
+- `attemptId` (string): opaque armed attempt ID, or `"0"`
+- `buffered` (number): 1 when a buffered generation exists, otherwise 0
+- `bufferedSpellId` (number): buffered spell ID, or 0
+- `bufferedTargetGuid` (string): captured buffered target, or the zero GUID
+- `bufferedAttemptId` (string): opaque buffered attempt ID, or `"0"`
+
+Attempt IDs are strings because the 1.12 Lua number type cannot exactly
+represent every 64-bit integer. Treat them as opaque keys. A buffered
+generation's replay receives a new attempt ID; correlate the old buffer through
+`SPELL_ON_SWING_STATE` code 4 and the replay through its subsequent cast/state
+events.
+
+```lua
+local info = GetOnSwingInfo()
+if info and info.armed == 1 then
+    print("Armed", info.spellId, info.targetGuid, info.attemptId)
+end
+if info and info.buffered == 1 then
+    print("Buffered", info.bufferedSpellId, info.bufferedAttemptId)
+end
 ```
 
 #### GetCastInfo()

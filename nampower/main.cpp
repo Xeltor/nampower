@@ -55,6 +55,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include <chrono>
 #include <iostream>
@@ -98,7 +99,7 @@ namespace Nampower {
     CastData gCastData;
 
     CastSpellParams gLastNormalCastParams;
-    CastSpellParams gLastOnSwingCastParams;
+    OnSwingState gOnSwingState;
 
     CastQueue gNonGcdCastQueue = CastQueue(6);
 
@@ -397,28 +398,45 @@ namespace Nampower {
         ResetChannelingFlags();
     }
 
-    void ResetOnSwingFlags() {
-        gCastData.onSwingQueued = false;
-        gCastData.onSwingSpellId = 0;
-    }
-
     void ClearQueuedSpells() {
-        if (gCastData.normalSpellQueued || gCastData.cooldownNormalSpellQueued) {
-            TriggerSpellQueuedEvent(NORMAL_QUEUE_POPPED, gLastNormalCastParams.spellId);
-            gCastData.normalSpellQueued = false;
-            gCastData.cooldownNormalSpellQueued = false;
+        auto const hadNormalQueue = gCastData.normalSpellQueued ||
+                                    gCastData.cooldownNormalSpellQueued;
+        auto const hadNonGcdQueue = gCastData.nonGcdSpellQueued ||
+                                    gCastData.cooldownNonGcdSpellQueued;
+        auto const oldNormalSpellId = gLastNormalCastParams.spellId;
+        std::vector<uint32_t> oldNonGcdSpellIds;
+        while (!gNonGcdCastQueue.isEmpty()) {
+            oldNonGcdSpellIds.push_back(gNonGcdCastQueue.pop().spellId);
         }
 
-        if (gCastData.nonGcdSpellQueued || gCastData.cooldownNonGcdSpellQueued) {
-            while (!gNonGcdCastQueue.isEmpty()) {
-                auto castParams = gNonGcdCastQueue.pop();
-                TriggerSpellQueuedEvent(NON_GCD_QUEUE_POPPED, castParams.spellId);
-            }
-            gCastData.nonGcdSpellQueued = false;
-            gCastData.cooldownNonGcdSpellQueued = false;
-        }
+        // Consume every old queue family before the first synchronous Lua
+        // callback. Callback-created replacements then survive this clear
+        // frame, regardless of which queue family they use.
+        gCastData.normalSpellQueued = false;
+        gCastData.cooldownNormalSpellQueued = false;
+        gCastData.nonGcdSpellQueued = false;
+        gCastData.cooldownNonGcdSpellQueued = false;
         gCastData.targetingSpellQueued = false;
         gCastData.targetingSpellId = 0;
+
+        CancelOnSwingState();
+
+        if (hadNormalQueue &&
+            !gCastData.normalSpellQueued &&
+            !gCastData.cooldownNormalSpellQueued) {
+            TriggerSpellQueuedEvent(NORMAL_QUEUE_POPPED, oldNormalSpellId);
+        }
+
+        for (auto const spellId : oldNonGcdSpellIds) {
+            if (!hadNonGcdQueue) {
+                break;
+            }
+            if (gCastData.nonGcdSpellQueued ||
+                gCastData.cooldownNonGcdSpellQueued) {
+                break;
+            }
+            TriggerSpellQueuedEvent(NON_GCD_QUEUE_POPPED, spellId);
+        }
     }
 
     void ResetDisenchantState() {
@@ -434,7 +452,7 @@ namespace Nampower {
         gCastHistory.clear();
         gNonGcdCastQueue.clear();
         gLastNormalCastParams = CastSpellParams{};
-        gLastOnSwingCastParams = CastSpellParams{};
+        gOnSwingState = OnSwingState{};
         gLastCastData = LastCastData{};
         gCastData = CastData{};
         gForceQueueCast = false;
@@ -1720,6 +1738,9 @@ namespace Nampower {
         char SPELL_CAST_RESULT_SELF[] = "SPELL_CAST_RESULT_SELF";
         addCustomEvent(game::SPELL_CAST_RESULT_SELF, SPELL_CAST_RESULT_SELF);
 
+        char SPELL_ON_SWING_STATE[] = "SPELL_ON_SWING_STATE";
+        addCustomEvent(game::SPELL_ON_SWING_STATE, SPELL_ON_SWING_STATE);
+
         char SPELL_DAMAGE_EVENT_SELF[] = "SPELL_DAMAGE_EVENT_SELF";
         addCustomEvent(game::SPELL_DAMAGE_EVENT_SELF, SPELL_DAMAGE_EVENT_SELF);
 
@@ -2003,6 +2024,9 @@ namespace Nampower {
 
         char getCurrentCastingInfo[] = "GetCurrentCastingInfo";
         RegisterLuaFunction(getCurrentCastingInfo, reinterpret_cast<uintptr_t *>(Script_GetCurrentCastingInfo));
+
+        char getOnSwingInfo[] = "GetOnSwingInfo";
+        RegisterLuaFunction(getOnSwingInfo, reinterpret_cast<uintptr_t *>(Script_GetOnSwingInfo));
 
         char getSpellIdForName[] = "GetSpellIdForName";
         RegisterLuaFunction(getSpellIdForName, reinterpret_cast<uintptr_t *>(Script_GetSpellIdForName));

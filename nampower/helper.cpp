@@ -247,7 +247,8 @@ namespace Nampower {
     }
 
     bool SpellIsOnSwing(const game::SpellRec *spell) {
-        return spell->Attributes & game::SPELL_ATTR_ON_NEXT_SWING_1;
+        return spell->Attributes & (game::SPELL_ATTR_ON_NEXT_SWING_1 |
+                                    game::SPELL_ATTR_ON_NEXT_SWING_2);
     }
 
     bool SpellIsAttackTradeskillOrEnchant(const game::SpellRec *spell) {

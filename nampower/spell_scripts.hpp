@@ -10,6 +10,8 @@
 namespace Nampower {
     uint32_t Script_GetCurrentCastingInfo(uintptr_t *luaState);
 
+    uint32_t Script_GetOnSwingInfo(uintptr_t *luaState);
+
     uint32_t Script_GetCastInfo(uintptr_t *luaState);
 
     uint32_t Script_ChannelStopCastingNextTick(uintptr_t *luaState);

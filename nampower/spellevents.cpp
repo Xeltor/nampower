@@ -38,9 +38,11 @@ namespace Nampower {
             auto const guid = GetUnitGuidFromString(unitName);
             if (guid) {
                 DEBUG_LOG("Spell target unit " << unitName << " guid " << guid);
-                // update all cast params so we don't have to figure out which one to use
+                // Update queue types whose target is selected after the cast
+                // request. On-swing generations capture their target when
+                // armed/buffered and must not be mutated by unrelated target
+                // callbacks.
                 gLastNormalCastParams.guid = guid;
-                gLastOnSwingCastParams.guid = guid;
 
                 auto nonGcdCastParams = gNonGcdCastQueue.peek();
                 if (nonGcdCastParams) {
@@ -284,13 +286,14 @@ namespace Nampower {
             return;
         }
 
-        TriggerSpellFailedSelfEvent(spellId, spellResult, failedByServer, attemptId);
-
         ResetCastFlags();
 
-        if (spellId == gCastData.onSwingSpellId) {
-            ResetOnSwingFlags();
-        }
+        // Resolve an exactly matched on-swing generation before any Lua
+        // callback. An ambiguous zero-ID failure retains ownership; a callback
+        // may then arm a replacement without this older frame clearing it.
+        FailOnSwingState(spellId, attemptId);
+
+        TriggerSpellFailedSelfEvent(spellId, spellResult, failedByServer, attemptId);
 
         if ((spellResult == game::SpellCastResult::SPELL_FAILED_NOT_READY ||
              spellResult == game::SpellCastResult::SPELL_FAILED_ITEM_NOT_READY ||
@@ -303,6 +306,17 @@ namespace Nampower {
                 DEBUG_LOG("Not retrying uncorrelated failure for "
                     << game::GetSpellName(spellId) << " code "
                     << int(spellResult));
+                return;
+            }
+
+            // On-next-swing spells have a distinct armed/buffered ownership
+            // model. Replaying one through the normal or non-GCD retry queues
+            // can silently orphan it, so server-rejected generations are left
+            // failed for the caller to recommend/arm again explicitly.
+            if (castParams->castType == CastType::ON_SWING) {
+                castParams->castResult = CastResult::SERVER_FAILURE;
+                DEBUG_LOG("Not automatically retrying on swing spell "
+                    << game::GetSpellName(spellId));
                 return;
             }
 
@@ -993,6 +1007,21 @@ namespace Nampower {
 
     void SpellGoHook(hadesmem::PatchDetourBase *detour, uint64_t *itemGUID, uint64_t *casterGUID,
                      uint32_t spellId, CDataStore *packet) {
+        auto const casterGuidValue = casterGUID ? *casterGUID : 0;
+        auto const activePlayerGuid = game::ClntObjMgrGetActivePlayerGuid();
+        auto const castByActivePlayer = activePlayerGuid != 0 &&
+                                        activePlayerGuid == casterGuidValue;
+        auto const spell = game::GetSpellInfo(spellId);
+
+        OnSwingState resolvedOnSwingState{};
+        if (castByActivePlayer && spell && spell->Id > 0 && SpellIsOnSwing(spell)) {
+            gLastCastData.onSwingStartTimeMs = GetTime();
+            // Consume ownership before parsing the embedded miss list. This
+            // guarantees the exact generation event precedes same-packet
+            // SPELL_MISS_SELF and SPELL_GO_SELF callbacks.
+            resolvedOnSwingState = BeginOnSwingResolution(spellId);
+        }
+
         auto const rpos = packet->m_read;
 
         int16_t castFlags;
@@ -1007,8 +1036,6 @@ namespace Nampower {
             targetHitGuids[i] = 0;
             packet->Get(targetHitGuids[i]);
         }
-
-        uint64_t casterGuidValue = casterGUID ? *casterGUID : 0;
 
         uint8_t numTargetsMissed;
         packet->Get(numTargetsMissed);
@@ -1069,38 +1096,14 @@ namespace Nampower {
         // if this wasn't triggered by an item, itemGUID will just be the casterGUID duplicated
         spellGo(itemGUID, casterGUID, spellId, packet);
 
-        auto const activePlayerGuid = game::ClntObjMgrGetActivePlayerGuid();
-        auto const castByActivePlayer = activePlayerGuid == casterGuidValue;
-        auto const spell = game::GetSpellInfo(spellId);
+        // Buffer replay happens only after the client consumed the old
+        // SpellGo packet. Its detached value snapshot remains valid even when
+        // the earlier Lua callbacks armed or buffered newer generations.
+        FinishOnSwingResolution(resolvedOnSwingState);
 
         if (!spell || spell->Id <= 0) {
             DEBUG_LOG("Unable to determine spell information in SpellGo for " << spellId);
             return;
-        }
-
-        if (castByActivePlayer) {
-            auto const currentTime = GetTime();
-            // only care about our own casts
-            if (!gCastData.channeling) {
-                // check if spell is on swing
-                if (spell->Attributes & game::SPELL_ATTR_ON_NEXT_SWING_1) {
-                    gLastCastData.onSwingStartTimeMs = currentTime;
-
-                    gCastData.pendingOnSwingCast = false;
-
-                    if (gCastData.onSwingQueued) {
-                        DEBUG_LOG("On swing spell " << game::GetSpellName(spellId) <<
-                            " resolved, casting queued on swing spell "
-                            << game::GetSpellName(gLastOnSwingCastParams.spellId));
-
-                        TriggerSpellQueuedEvent(ON_SWING_QUEUE_POPPED, gLastOnSwingCastParams.spellId);
-                        Spell_C_CastSpellHook(castSpellDetour, gLastOnSwingCastParams.casterUnit,
-                                              gLastOnSwingCastParams.spellId,
-                                              gLastOnSwingCastParams.item, gLastOnSwingCastParams.guid);
-                        gCastData.onSwingQueued = false;
-                    }
-                }
-            }
         }
 
         if (gUserSettings.enableAuraCastEvents && doesSpellApplyAura(spell)) {

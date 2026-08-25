@@ -28,6 +28,7 @@ For custom Lua functions, see [SCRIPTS.md](SCRIPTS.md). For general usage inform
 
 ## Table of Contents
 - [SPELL_QUEUE_EVENT](#spell_queue_event)
+- [SPELL_ON_SWING_STATE](#spell_on_swing_state)
 - [SPELL_CAST_EVENT](#spell_cast_event)
 - [SPELL_CAST_RESULT_SELF](#spell_cast_result_self)
 - [SPELL_START_SELF and SPELL_START_OTHER](#spell_start_self-and-spell_start_other)
@@ -91,6 +92,124 @@ local function spellQueueEvent(eventCode, spellId)
 end
 
 NampowerSettings:RegisterEvent("SPELL_QUEUE_EVENT", spellQueueEvent)
+```
+
+### SPELL_ON_SWING_STATE
+
+`SPELL_ON_SWING_STATE` reports the exact lifecycle of player on-next-swing
+generations. It was added in Nampower 4.7.1. Unlike the legacy
+`SPELL_QUEUE_EVENT` codes 0 and 1, every transition carries the captured target
+and opaque cast-attempt identifier.
+
+Parameters:
+
+1. `int stateCode`
+2. `int spellId`
+3. `string targetGuid` - the target captured when this generation was created
+4. `string attemptId` - opaque decimal identifier matching
+   `SPELL_CAST_EVENT`; never convert it to a Lua number
+
+State codes:
+
+```text
+0 ARMED             client accepted this generation as the pending on-swing spell
+1 BUFFERED          this failed attempt is stored behind the armed generation
+2 ARMED_REPLACED    this formerly armed generation was displaced by a newer accepted generation
+3 BUFFER_REPLACED   this formerly buffered generation was displaced by a newer buffer
+4 BUFFER_POPPED     this buffer was detached for one replay attempt
+5 CONSUMED          SpellGo consumed this armed generation
+6 FAILED            this armed generation failed
+7 CANCELLED         this armed generation was explicitly cleared
+8 BUFFER_CANCELLED  this buffer was cleared without replay
+```
+
+The event always describes the generation named by arguments 2 through 4. For
+codes 2 and 3, that is the old displaced generation, not its replacement. Code
+4 names the old buffered attempt. The replay is a new client attempt and, if it
+reaches the cast hook, has a new identifier in `SPELL_CAST_EVENT` and code 0.
+
+State is installed or detached before this event is emitted. Calling
+`GetOnSwingInfo()` from the callback therefore sees the current replacement
+state, never a pointer into the generation described by a pop/failure event.
+At `CONSUMED`, both the consumed arm and its old buffer have already been
+detached into value snapshots, so the callback does not see that old buffer.
+The legacy queue ABI remains available as a queued/not-queued projection. Code
+1 follows buffer pop, cancellation, or failure only when no newer buffer is
+live after the exact callback; it is suppressed when a replacement buffer
+already exists so an old pop cannot hide current queued state. Code 0 follows a
+buffer announcement while that same buffer is still current.
+
+Event ordering for an accepted on-swing request is the applicable replacement
+and cancellation transitions, then code 0 (`ARMED`), then
+`SPELL_CAST_EVENT`. A locally rejected request can emit `SPELL_FAILED_SELF`
+inside the client cast call; when it is eligible for buffering, the buffer state
+transition and legacy queue callback follow, then the failed
+`SPELL_CAST_EVENT`. The later cast event uses the target captured before these
+callbacks, even if one of them changes the selected target. Attempt IDs, rather
+than callback arrival order, are the generation identity during synchronous
+re-entry.
+
+For an exactly correlated server rejection, the order is
+`SPELL_CAST_RESULT_SELF`, then `FAILED` (and `BUFFER_CANCELLED` plus a
+conditional legacy pop when applicable), then `SPELL_FAILED_SELF`. A local
+rejection of a newer same-spell attempt does not clear an older armed owner: its
+active attempt ID does not match that owner.
+
+For a matching active-player on-swing `SpellGo`, code 5 (`CONSUMED`) is emitted
+at entry to the packet hook, before parsing that packet's miss list. The exact
+same-packet order is therefore:
+
+```text
+SPELL_ON_SWING_STATE(CONSUMED)
+SPELL_MISS_SELF (zero or more embedded misses)
+SPELL_GO_SELF (when enabled)
+original client SpellGo handler
+SPELL_ON_SWING_STATE(BUFFER_POPPED)
+legacy queue code 1 (only when no newer buffer is live)
+replay attempt, or BUFFER_CANCELLED when a callback superseded it
+```
+
+If a `BUFFER_POPPED` or legacy pop callback creates any newer armed/buffered
+state, the newer callback state wins: Nampower emits `BUFFER_CANCELLED` for the
+detached old buffer and does not replay it. The same cancellation transition is
+emitted if the active-player object changed before replay. This prevents an old
+generation from silently attaching behind or replacing callback-created state.
+
+`AUTO_ATTACK_SELF`, `SPELL_DAMAGE_EVENT_SELF`, and miss events from separate
+combat-log packets are emitted by independent opcode hooks. Server packet order
+is authoritative, so Nampower cannot guarantee that `CONSUMED` precedes one of
+those events if its packet was delivered before the matching `SpellGo`. Those
+terminal event ABIs do not carry the on-swing attempt ID in 4.7.1; consumers
+must retain a bounded correlation fallback for that case rather than treating
+arrival order as exact identity.
+
+Server-rejected on-swing attempts are not automatically routed through the
+normal/non-GCD retry queues. The failed generation and its buffer are cleared,
+and the caller may explicitly recommend and arm a new generation. When the
+server result cannot be correlated to one history attempt, the associated
+`SPELL_FAILED_SELF` attempt ID is `"0"`. Nampower does not guess: the current
+same-spell armed/buffered owner remains conservatively occupied until an exact
+SpellGo/failure, explicit cancellation, or player-context reset resolves it.
+
+An on-swing request originating from an item is never buffered for replay.
+Nampower cannot safely retain and later dereference the client's raw item
+object across inventory/object invalidation; the original cast attempt and its
+result events are still reported normally.
+
+`SpellGo` itself has no client attempt sequence. Nampower consumes a current
+armed generation only when its spell ID matches, but cannot disambiguate a
+late same-spell `SpellGo` from a newer same-spell replacement. Runtime ordering
+is expected to prevent that overlap, but it is not proven by the static tests;
+consumers should treat this as an attribution limitation.
+
+```lua
+frame:RegisterEvent("SPELL_ON_SWING_STATE")
+frame:SetScript("OnEvent", function()
+    if event == "SPELL_ON_SWING_STATE" then
+        local stateCode, spellId, targetGuid, attemptId =
+            arg1, arg2, arg3, arg4
+    end
+end)
 ```
 
 ### SPELL_CAST_EVENT

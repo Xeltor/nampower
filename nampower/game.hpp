@@ -1692,6 +1692,7 @@ namespace game {
         SPELL_DISPEL_BY_SELF  = 654, // nampower
         SPELL_DISPEL_BY_OTHER = 655, // nampower
         SPELL_CAST_RESULT_SELF = 656, // nampower
+        SPELL_ON_SWING_STATE = 657, // nampower
     };
 
     /// Type of environmental damages

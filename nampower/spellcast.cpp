@@ -365,12 +365,244 @@ namespace Nampower {
             spellId);
     }
 
+    void TriggerOnSwingStateEvent(OnSwingStateEvents stateEventCode, const CastSpellParams &params) {
+        static char format[] = "%d%d%s%s";
+        char *targetGuidString = ConvertGuidToString(params.guid);
+        auto attemptIdString = std::to_string(params.castId);
+
+        ((int (__cdecl *)(int eventCode,
+                          char *fmt,
+                          uint32_t stateEventCodeParam,
+                          uint32_t spellIdParam,
+                          char *targetGuidParam,
+                          char *attemptIdParam)) Offsets::SignalEventParam)(
+            game::SPELL_ON_SWING_STATE,
+            format,
+            static_cast<uint32_t>(stateEventCode),
+            params.spellId,
+            targetGuidString,
+            const_cast<char *>(attemptIdString.c_str()));
+
+        FreeGuidString(targetGuidString);
+    }
+
+    namespace {
+        void SyncLegacyOnSwingState() {
+            // Preserve the old polling and queue fields while keeping a single
+            // value-owned source of truth for exact generation identity.
+            gCastData.pendingOnSwingCast = gOnSwingState.armed;
+            gCastData.onSwingQueued = gOnSwingState.buffered;
+            gCastData.onSwingSpellId = gOnSwingState.armed
+                                           ? gOnSwingState.armedParams.spellId
+                                           : 0;
+        }
+
+        bool IsCurrentArmedOnSwingGeneration(const CastSpellParams &params) {
+            return gOnSwingState.armed &&
+                   gOnSwingState.armedParams.castId == params.castId;
+        }
+
+        bool IsCurrentBufferedOnSwingGeneration(const CastSpellParams &params) {
+            return gOnSwingState.buffered &&
+                   gOnSwingState.bufferedParams.castId == params.castId;
+        }
+
+        bool HasSameOnSwingGenerations(const OnSwingState &left,
+                                       const OnSwingState &right) {
+            return left.armed == right.armed &&
+                   (!left.armed ||
+                    left.armedParams.castId == right.armedParams.castId) &&
+                   left.buffered == right.buffered &&
+                   (!left.buffered ||
+                    left.bufferedParams.castId == right.bufferedParams.castId);
+        }
+
+        void TriggerLegacyOnSwingBufferPopIfNoReplacement(const CastSpellParams &params) {
+            // SPELL_QUEUE_EVENT has no generation ID and is used as a simple
+            // queued/not-queued projection. If an exact callback created a
+            // newer buffer, emitting the old pop now would leave legacy
+            // consumers with the opposite of the current native state.
+            if (!gOnSwingState.buffered) {
+                TriggerSpellQueuedEvent(ON_SWING_QUEUE_POPPED, params.spellId);
+            }
+        }
+
+        void ArmOnSwingState(const CastSpellParams &params) {
+            auto const previousState = gOnSwingState;
+
+            // Install the new generation and detach every old generation
+            // before any event callback can re-enter the cast hook.
+            gOnSwingState.armed = true;
+            gOnSwingState.armedParams = params;
+            gOnSwingState.buffered = false;
+            gOnSwingState.bufferedParams = CastSpellParams{};
+            SyncLegacyOnSwingState();
+
+            if (previousState.armed) {
+                TriggerOnSwingStateEvent(ON_SWING_STATE_ARMED_REPLACED,
+                                         previousState.armedParams);
+            }
+            if (previousState.buffered) {
+                TriggerOnSwingStateEvent(ON_SWING_STATE_BUFFER_CANCELLED,
+                                         previousState.bufferedParams);
+                TriggerLegacyOnSwingBufferPopIfNoReplacement(
+                    previousState.bufferedParams);
+            }
+
+            // A callback above may already have replaced this generation. Do
+            // not announce it as the current armed generation in that case.
+            if (IsCurrentArmedOnSwingGeneration(params)) {
+                TriggerOnSwingStateEvent(ON_SWING_STATE_ARMED, params);
+            }
+        }
+
+        void BufferOnSwingState(const CastSpellParams &params) {
+            if (!gOnSwingState.armed) {
+                return;
+            }
+
+            auto const hadPreviousBuffer = gOnSwingState.buffered;
+            auto const previousBuffer = gOnSwingState.bufferedParams;
+
+            // Own the replacement before callbacks. This makes replacement
+            // explicit and prevents a callback from invalidating a history
+            // pointer that is still needed after it returns.
+            gOnSwingState.buffered = true;
+            gOnSwingState.bufferedParams = params;
+            SyncLegacyOnSwingState();
+
+            if (hadPreviousBuffer) {
+                TriggerOnSwingStateEvent(ON_SWING_STATE_BUFFER_REPLACED,
+                                         previousBuffer);
+                TriggerLegacyOnSwingBufferPopIfNoReplacement(previousBuffer);
+            }
+
+            if (!IsCurrentBufferedOnSwingGeneration(params)) {
+                return;
+            }
+            TriggerOnSwingStateEvent(ON_SWING_STATE_BUFFERED, params);
+
+            if (IsCurrentBufferedOnSwingGeneration(params)) {
+                TriggerSpellQueuedEvent(ON_SWING_QUEUED, params.spellId);
+            }
+        }
+    }
+
+    void CancelOnSwingState() {
+        auto const cancelledState = gOnSwingState;
+        gOnSwingState = OnSwingState{};
+        SyncLegacyOnSwingState();
+
+        if (cancelledState.armed) {
+            TriggerOnSwingStateEvent(ON_SWING_STATE_CANCELLED,
+                                     cancelledState.armedParams);
+        }
+        if (cancelledState.buffered) {
+            TriggerOnSwingStateEvent(ON_SWING_STATE_BUFFER_CANCELLED,
+                                     cancelledState.bufferedParams);
+            TriggerLegacyOnSwingBufferPopIfNoReplacement(
+                cancelledState.bufferedParams);
+        }
+    }
+
+    void FailOnSwingState(uint32_t spellId, uint64_t attemptId) {
+        if (!gOnSwingState.armed ||
+            gOnSwingState.armedParams.spellId != spellId) {
+            return;
+        }
+
+        if (attemptId == 0) {
+            // The server packet has no cast sequence. It cannot prove that the
+            // current same-spell generation is the one that failed, so retain
+            // ownership until an exact terminal, explicit cancel, or context
+            // reset resolves it.
+            DEBUG_LOG("Retaining on swing state after uncorrelated failure for "
+                << game::GetSpellName(spellId));
+            return;
+        }
+
+        if (gOnSwingState.armedParams.castId != attemptId) {
+            return;
+        }
+
+        auto const failedState = gOnSwingState;
+        gOnSwingState = OnSwingState{};
+        SyncLegacyOnSwingState();
+
+        TriggerOnSwingStateEvent(ON_SWING_STATE_FAILED,
+                                 failedState.armedParams);
+        if (failedState.buffered) {
+            TriggerOnSwingStateEvent(ON_SWING_STATE_BUFFER_CANCELLED,
+                                     failedState.bufferedParams);
+            TriggerLegacyOnSwingBufferPopIfNoReplacement(
+                failedState.bufferedParams);
+        }
+    }
+
+    OnSwingState BeginOnSwingResolution(uint32_t spellId) {
+        if (!gOnSwingState.armed ||
+            gOnSwingState.armedParams.spellId != spellId) {
+            return OnSwingState{};
+        }
+
+        auto const resolvedState = gOnSwingState;
+        gOnSwingState = OnSwingState{};
+        SyncLegacyOnSwingState();
+
+        // This is deliberately emitted at SpellGo entry, before its embedded
+        // miss list and before SPELL_GO_SELF, so addons can own the exact
+        // generation before same-packet terminal evidence arrives.
+        TriggerOnSwingStateEvent(ON_SWING_STATE_CONSUMED,
+                                 resolvedState.armedParams);
+        return resolvedState;
+    }
+
+    void FinishOnSwingResolution(const OnSwingState &resolvedState) {
+        if (!resolvedState.armed || !resolvedState.buffered) {
+            return;
+        }
+
+        auto const bufferedParams = resolvedState.bufferedParams;
+        TriggerOnSwingStateEvent(ON_SWING_STATE_BUFFER_POPPED,
+                                 bufferedParams);
+        TriggerLegacyOnSwingBufferPopIfNoReplacement(bufferedParams);
+
+        // Event callbacks above may cast or buffer another generation. That
+        // newer state wins; replaying this older snapshot could otherwise
+        // attach it as a surprise buffer or displace the callback's choice.
+        if (gOnSwingState.armed || gOnSwingState.buffered) {
+            TriggerOnSwingStateEvent(ON_SWING_STATE_BUFFER_CANCELLED,
+                                     bufferedParams);
+            DEBUG_LOG("Dropping detached on swing buffer because its pop callback created newer state");
+            return;
+        }
+
+        auto const activePlayerGuid = game::ClntObjMgrGetActivePlayerGuid();
+        auto const activePlayer = activePlayerGuid != 0
+                                      ? game::GetObjectPtr(activePlayerGuid)
+                                      : nullptr;
+        if (activePlayer == nullptr || bufferedParams.casterUnit != activePlayer) {
+            TriggerOnSwingStateEvent(ON_SWING_STATE_BUFFER_CANCELLED,
+                                     bufferedParams);
+            DEBUG_LOG("Dropping detached on swing buffer because the active player changed");
+            return;
+        }
+
+        DEBUG_LOG("Replaying buffered on swing spell "
+            << game::GetSpellName(bufferedParams.spellId));
+        Spell_C_CastSpellHook(castSpellDetour,
+                              bufferedParams.casterUnit,
+                              bufferedParams.spellId,
+                              bufferedParams.item,
+                              bufferedParams.guid);
+    }
+
     void
     TriggerSpellCastEvent(bool result, uint32_t spellId, CastType castType, std::uint64_t guid, uint32_t itemId,
-                          uint64_t attemptId) {
+                          uint64_t attemptId, bool guidIsResolved = false) {
         static char format[] = "%d%d%d%s%d%s";
 
-        if (!guid) {
+        if (!guid && !guidIsResolved) {
             // default to current target
             guid = game::GetCurrentTargetGuid();
         }
@@ -612,21 +844,23 @@ namespace Nampower {
 
         // on swing spells are independent of cast bar / gcd, handle them separately
         if (spellIsOnSwing) {
-            SaveCastParams(&gLastOnSwingCastParams, casterUnit, spellId, item, guid, spell->StartRecoveryCategory,
-                           castTime,
-                           currentTime, ON_SWING, 0);
-
             auto const attemptId = gNextCastId++;
-            gCastHistory.pushFront({
-                attemptId, casterUnit, spellId, item, guidForHistory,
-                spell->StartRecoveryCategory,
-                castTime,
-                currentTime,
-                ON_SWING,
-                gCastData.numRetries,
-                CastResult::WAITING_FOR_CAST
-            });
+            CastSpellParams attemptParams{};
+            SaveCastParams(&attemptParams,
+                           casterUnit,
+                           spellId,
+                           item,
+                           guidForHistory,
+                           spell->StartRecoveryCategory,
+                           castTime,
+                           currentTime,
+                           ON_SWING,
+                           gCastData.numRetries);
+            attemptParams.castId = attemptId;
+            gCastHistory.pushFront(attemptParams);
+
             // try to cast the spell
+            auto const stateBeforeClientCast = gOnSwingState;
             auto const castSpell = detour->GetTrampolineT<Spell_C_CastSpellT>();
             bool ret;
             {
@@ -634,24 +868,35 @@ namespace Nampower {
                 ret = castSpell(casterUnit, spellId, item, guid);
             }
 
-            TriggerSpellCastEvent(ret, spellId, ON_SWING, guid, itemId, attemptId);
-
-            if (ret) {
-                gCastData.pendingOnSwingCast = true;
-                gCastData.onSwingSpellId = spellId;
-            }
-
-            if (!ret && gUserSettings.queueOnSwingSpells && !gNoQueueCast) {
+            // The original client call can synchronously emit Lua events. A
+            // newer on-swing generation created there wins; this older frame
+            // must not overwrite it or attach a stale buffer behind it.
+            if (!HasSameOnSwingGenerations(stateBeforeClientCast,
+                                           gOnSwingState)) {
+                DEBUG_LOG("On swing state changed reentrantly while casting "
+                    << spellName << ", preserving the newer generation");
+            } else if (ret) {
+                gLastCastData.onSwingStartTimeMs = GetTime();
+                ArmOnSwingState(attemptParams);
+                DEBUG_LOG("Successful on swing spell " << spellName);
+            } else if (gUserSettings.queueOnSwingSpells &&
+                       !gNoQueueCast &&
+                       item == nullptr &&
+                       gOnSwingState.armed) {
                 // if not in cooldown window
                 if (currentTime - gLastCastData.onSwingStartTimeMs > gUserSettings.onSwingBufferCooldownMs) {
-                    DEBUG_LOG("Queuing on swing spell " << spellName);
-                    TriggerSpellQueuedEvent(ON_SWING_QUEUED, spellId);
-                    gCastData.onSwingQueued = true;
+                    DEBUG_LOG("Buffering on swing spell " << spellName
+                        << " behind "
+                        << game::GetSpellName(gOnSwingState.armedParams.spellId));
+                    BufferOnSwingState(attemptParams);
                 }
-            } else {
-                gLastCastData.onSwingStartTimeMs = GetTime();
-                DEBUG_LOG("Successful on swing spell " << spellName);
             }
+
+            // State ownership is settled before this synchronous Lua callback.
+            // A reentrant cast may replace it, but this older frame will never
+            // write ownership again after the callback returns.
+            TriggerSpellCastEvent(ret, spellId, ON_SWING, attemptParams.guid,
+                                  itemId, attemptId, true);
 
             return ret;
         }
